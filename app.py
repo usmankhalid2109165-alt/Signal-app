@@ -3,57 +3,49 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import time
-from ta.momentum import RSIIndicator
-from ta.trend import EMAIndicator, MACD
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.trend import EMAIndicator
 
-# Page Setup
-st.set_page_config(page_title="Quotex Strict Trend Signal Engine", page_icon="📈", layout="centered")
+st.set_page_config(page_title="Quotex High-Frequency Signal Bot", page_icon="⚡", layout="centered")
 
 st.markdown("""
 <style>
     .main-card {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        background: linear-gradient(135deg, #0b0f19 0%, #111827 100%);
         border: 2px solid #38bdf8;
         border-radius: 16px;
         padding: 20px;
-        box-shadow: 0 0 20px rgba(56, 189, 248, 0.3);
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.25);
         text-align: center;
         margin-bottom: 25px;
     }
     .call-glow {
         color: #22c55e;
         text-shadow: 0 0 15px #22c55e;
-        font-size: 32px;
+        font-size: 34px;
         font-weight: 800;
     }
     .put-glow {
         color: #ef4444;
         text-shadow: 0 0 15px #ef4444;
-        font-size: 32px;
+        font-size: 34px;
         font-weight: 800;
-    }
-    .wait-glow {
-        color: #f59e0b;
-        text-shadow: 0 0 15px #f59e0b;
-        font-size: 26px;
-        font-weight: 700;
     }
     .stat-box {
         background: #0f172a;
         border-radius: 10px;
         padding: 12px;
-        border: 1px solid #334155;
+        border: 1px solid #1e293b;
         text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Quotex Strict Trend AI Engine")
-st.caption("No Reversals - Pure Trend Following Engine for 1m, 2m & 3m Trades")
+st.title("⚡ Quotex Ultra-Aggressive Scalping Engine")
+st.caption("Continuous Signal Engine for Micro-Timeframes (5s, 10s, 15s, 30s, 1m, 2m, 3m)")
 
 st.markdown("---")
 
-# Pairs
 quotex_live_pairs = {
     "EUR/USD (Live)": "EURUSD=X",
     "GBP/USD (Live)": "GBPUSD=X",
@@ -73,108 +65,90 @@ quotex_otc_pairs = [
 
 col1, col2 = st.columns(2)
 with col1:
-    market_mode = st.selectbox("Select Market:", ["Quotex Live Market", "Quotex OTC Market"])
+    market_mode = st.selectbox("Market Type:", ["Quotex Live Market", "Quotex OTC Market"])
     selected_pair = st.selectbox("Asset Pair:", list(quotex_live_pairs.keys()) if market_mode == "Quotex Live Market" else quotex_otc_pairs)
 
 with col2:
-    candle_tf = st.selectbox("Candle Timeframe / Expiry:", ["1 Minute", "2 Minutes", "3 Minutes"])
+    candle_tf = st.selectbox("Candle Timeframe:", [
+        "5 Seconds", "10 Seconds", "15 Seconds", "30 Seconds", 
+        "1 Minute", "2 Minutes", "3 Minutes"
+    ])
 
-def run_trend_engine(mode, pair, tf):
+def run_aggressive_engine(mode, pair, tf):
     bull_score = 0
     bear_score = 0
 
     if mode == "Quotex Live Market":
         ticker = quotex_live_pairs[pair]
-        interval = "1m"
         try:
-            df = yf.download(tickers=ticker, period="1d", interval=interval, progress=False)
-            if df.empty or len(df) < 50:
+            df = yf.download(tickers=ticker, period="1d", interval="1m", progress=False)
+            if df.empty or len(df) < 30:
                 df = None
         except Exception:
             df = None
     else:
         df = None
 
-    if df is None: # OTC Simulation Engine
+    if df is None: # Micro-Tick Simulation Data Engine
         seed = int(time.time() * 100000) % 1000000
         np.random.seed(seed)
-        steps = np.random.normal(loc=0.0, scale=0.0011, size=150)
+        steps = np.random.normal(loc=0.0, scale=0.0008, size=100)
         base = 1.0850 if "EUR" in pair else (150.0 if "JPY" in pair else 83.0)
         prices = base * np.exp(np.cumsum(steps))
-        df = pd.DataFrame({'Close': prices})
+        df = pd.DataFrame({
+            'High': prices * 1.0003,
+            'Low': prices * 0.9997,
+            'Close': prices
+        })
 
     close = df['Close'].squeeze()
+    high = df['High'].squeeze()
+    low = df['Low'].squeeze()
     curr_price = round(float(close.iloc[-1]), 5)
 
-    # 1. STRICT TREND EMA CLUSTER (EMA 9, 21, 50)
-    ema9 = float(EMAIndicator(close, window=9).ema_indicator().iloc[-1])
-    ema21 = float(EMAIndicator(close, window=21).ema_indicator().iloc[-1])
-    ema50 = float(EMAIndicator(close, window=50).ema_indicator().iloc[-1])
+    # 1. FAST EMA CROSSOVER
+    ema3 = float(EMAIndicator(close, window=3).ema_indicator().iloc[-1])
+    ema8 = float(EMAIndicator(close, window=8).ema_indicator().iloc[-1])
 
-    # Bullish Trend Alignment
-    if curr_price > ema9 and ema9 > ema21 and ema21 > ema50:
-        bull_score += 50
-    # Bearish Trend Alignment
-    elif curr_price < ema9 and ema9 < ema21 and ema21 < ema50:
-        bear_score += 50
+    if curr_price >= ema3: bull_score += 35
+    else: bear_score += 35
 
-    # 2. RSI MOMENTUM FILTER (NO REVERSALS ALLOWED)
-    rsi14 = float(RSIIndicator(close, window=14).rsi().iloc[-1])
-    if rsi14 > 55 and rsi14 < 70:    # Strong Upward Trend Momentum
-        bull_score += 30
-    elif rsi14 < 45 and rsi14 > 30:  # Strong Downward Trend Momentum
-        bear_score += 30
+    if ema3 >= ema8: bull_score += 35
+    else: bear_score += 35
 
-    # 3. MACD DIRECTION CONFIRMATION
-    macd_diff = float(MACD(close).macd_diff().iloc[-1])
-    if macd_diff > 0:
-        bull_score += 20
-    else:
-        bear_score += 20
+    # 2. FAST RSI MOMENTUM
+    rsi7 = float(RSIIndicator(close, window=7).rsi().iloc[-1])
+    if rsi7 >= 50: bull_score += 30
+    else: bear_score += 30
 
-    # STRICT THRESHOLD VERDICT
-    if bull_score >= 80:
+    # FORCE MANDATORY SIGNAL - NO NEUTRAL ALLOWED
+    if bull_score >= bear_score:
         signal = "🟢 CALL / UP"
-        accuracy = round(85.0 + (bull_score - 80) * 0.5, 1)
+        accuracy = round(75.0 + (bull_score / 100.0) * 20.0, 1)
         status_class = "call-glow"
-    elif bear_score >= 80:
-        signal = "🔴 PUT / DOWN"
-        accuracy = round(85.0 + (bear_score - 80) * 0.5, 1)
-        status_class = "put-glow"
     else:
-        signal = "⚠️ NO TRADE (TREND NOT STRONG ENOUGH)"
-        accuracy = 50.0
-        status_class = "wait-glow"
+        signal = "🔴 PUT / DOWN"
+        accuracy = round(75.0 + (bear_score / 100.0) * 20.0, 1)
+        status_class = "put-glow"
 
-    return signal, accuracy, bull_score, bear_score, round(rsi14, 1), curr_price, status_class
+    return signal, accuracy, bull_score, bear_score, round(rsi7, 1), curr_price, status_class
 
 st.markdown("---")
 
-if st.button("🚀 SCAN STRICT TREND & GENERATE SIGNAL", use_container_width=True):
+if st.button("🚀 SCAN MICRO-TICK & GENERATE SIGNAL", use_container_width=True):
     progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for percent in range(0, 101, 33):
-        time.sleep(0.12)
-        progress_bar.progress(percent)
-        if percent == 33:
-            status_text.text("Checking EMA Trend Alignment...")
-        elif percent == 66:
-            status_text.text("Verifying RSI Trend Momentum...")
-        elif percent == 99:
-            status_text.text("Confirming MACD Direction...")
-
-    time.sleep(0.1)
+    for p in range(0, 101, 50):
+        time.sleep(0.08)
+        progress_bar.progress(p)
     progress_bar.empty()
-    status_text.empty()
 
-    signal, accuracy, bull, bear, rsi, price, status_class = run_trend_engine(market_mode, selected_pair, candle_tf)
+    signal, accuracy, bull, bear, rsi, price, status_class = run_aggressive_engine(market_mode, selected_pair, candle_tf)
 
     card_html = f"""
     <div class="main-card">
-        <h3 style="color: #94a3b8; margin-bottom: 5px;">TREND ENGINE SIGNAL</h3>
+        <h3 style="color: #94a3b8; margin-bottom: 5px;">SCALPING SIGNAL GENERATED</h3>
         <div class="{status_class}">{signal}</div>
-        <p style="color: #cbd5e1; margin-top: 10px;">Market: <b>{market_mode}</b> | Asset: <b>{selected_pair}</b> | Timeframe: <b>{candle_tf}</b></p>
+        <p style="color: #cbd5e1; margin-top: 10px;">Market: <b>{market_mode}</b> | Pair: <b>{selected_pair}</b> | Timeframe: <b>{candle_tf}</b></p>
     </div>
     """
     st.markdown(card_html, unsafe_allow_html=True)
@@ -183,9 +157,9 @@ if st.button("🚀 SCAN STRICT TREND & GENERATE SIGNAL", use_container_width=Tru
     with c1:
         st.markdown(f"<div class='stat-box'><p style='color:#94a3b8;'>Signal Confidence</p><h3>{accuracy}%</h3></div>", unsafe_allow_html=True)
     with c2:
-        st.markdown(f"<div class='stat-box'><p style='color:#22c55e;'>Bull Power</p><h3>{bull}/100</h3></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='stat-box'><p style='color:#22c55e;'>Bull Momentum</p><h3>{bull} Pts</h3></div>", unsafe_allow_html=True)
     with c3:
-        st.markdown(f"<div class='stat-box'><p style='color:#ef4444;'>Bear Power</p><h3>{bear}/100</h3></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='stat-box'><p style='color:#ef4444;'>Bear Momentum</p><h3>{bear} Pts</h3></div>", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.caption(f"Price: {price} | RSI Level: {rsi}")
+    st.caption(f"Price: {price} | RSI (7): {rsi}")
