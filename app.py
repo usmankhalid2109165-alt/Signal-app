@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import time
-from ta.momentum import RSIIndicator, StochasticOscillator, WilliamsRIndicator, ROCIndicator, StochRSIIndicator
-from ta.trend import EMAIndicator, SMAIndicator, MACD, CCIIndicator, WMAIndicator
-from ta.volatility import BollingerBands, AverageTrueRange, KeltnerChannel
+from ta.momentum import RSIIndicator, StochasticOscillator, WilliamsRIndicator, ROCIndicator
+from ta.trend import EMAIndicator, SMAIndicator, MACD, CCIIndicator
+from ta.volatility import BollingerBands
 
 # Page Config with Dark Cyberpunk Theme
 st.set_page_config(page_title="Quotex Institutional 999+ AI Engine", page_icon="⚡", layout="centered")
@@ -57,7 +57,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("⚡ Quotex Institutional 999+ AI Signal Engine")
-st.caption("Deep Confluence Scanning across 999+ Technical Indicators & Price Action Factors")
+st.caption("Deep Confluence Scanning across Technical Indicators & Price Action Factors")
 
 st.markdown("---")
 
@@ -91,7 +91,6 @@ with col2:
 def run_999_engine(mode, pair, tf):
     bull_score = 0
     bear_score = 0
-    total_max_score = 500  # Weighted Factor Units
 
     if mode == "Quotex Live Market":
         ticker = quotex_live_pairs[pair]
@@ -105,7 +104,7 @@ def run_999_engine(mode, pair, tf):
     else:
         df = None
 
-    if df is None: # OTC / Simulation High-Volatility Micro Engine
+    if df is None: # OTC Micro Engine
         seed = int(time.time() * 100000) % 1000000
         np.random.seed(seed)
         steps = np.random.normal(loc=0.0, scale=0.0011, size=150)
@@ -124,13 +123,12 @@ def run_999_engine(mode, pair, tf):
     open_p = df['Open'].squeeze()
     curr_price = round(float(close.iloc[-1]), 5)
 
-    # 1. MOVING AVERAGE CLUSTER (EMA 5, 9, 21, 50, 200 & SMA 20, 100)
+    # 1. MOVING AVERAGE CLUSTER
     ema5 = float(EMAIndicator(close, window=5).ema_indicator().iloc[-1])
     ema9 = float(EMAIndicator(close, window=9).ema_indicator().iloc[-1])
     ema21 = float(EMAIndicator(close, window=21).ema_indicator().iloc[-1])
     ema50 = float(EMAIndicator(close, window=50).ema_indicator().iloc[-1])
     ema200 = float(EMAIndicator(close, window=200).ema_indicator().iloc[-1])
-    sma20 = float(SMAIndicator(close, window=20).sma_indicator().iloc[-1])
 
     if curr_price > ema5 and ema5 > ema9: bull_score += 35
     elif curr_price < ema5 and ema5 < ema9: bear_score += 35
@@ -141,12 +139,12 @@ def run_999_engine(mode, pair, tf):
     if curr_price > ema200: bull_score += 30
     else: bear_score += 30
 
-    # 2. MOMENTUM OSCILLATORS (RSI, Stoch, Stoch RSI, Williams %R, CCI)
+    # 2. MOMENTUM OSCILLATORS
     rsi14 = float(RSIIndicator(close, window=14).rsi().iloc[-1])
     rsi7 = float(RSIIndicator(close, window=7).rsi().iloc[-1])
     
-    if rsi14 < 30 and rsi7 < 25: bull_score += 50      # Heavy Oversold Reversal
-    elif rsi14 > 70 and rsi7 > 75: bear_score += 50    # Heavy Overbought Reversal
+    if rsi14 < 30 and rsi7 < 25: bull_score += 50
+    elif rsi14 > 70 and rsi7 > 75: bear_score += 50
     elif rsi14 > 52: bull_score += 20
     elif rsi14 < 48: bear_score += 20
 
@@ -172,15 +170,14 @@ def run_999_engine(mode, pair, tf):
     if curr_price <= bb_lower: bull_score += 45
     elif curr_price >= bb_upper: bear_score += 45
 
-    # 4. PRICE ACTION & CANDLE PATTERNS
+    # 4. PRICE ACTION PATTERNS
     c_close, c_open = float(close.iloc[-1]), float(open_p.iloc[-1])
     p_close, p_open = float(close.iloc[-2]), float(open_p.iloc[-2])
 
-    # Bullish / Bearish Engulfing
     if c_close > c_open and p_close < p_open and c_close > p_open: bull_score += 40
     elif c_close < c_open and p_close > p_open and c_close < p_close: bear_score += 40
 
-    # VERDICT SELECTION (STRICT 80%+ THRESHOLD)
+    # VERDICT SELECTION
     total = bull_score + bear_score
     bull_pct = (bull_score / total) * 100 if total > 0 else 50
     bear_pct = (bear_score / total) * 100 if total > 0 else 50
@@ -203,7 +200,6 @@ def run_999_engine(mode, pair, tf):
 st.markdown("---")
 
 if st.button("🚀 SCAN 999+ STRATEGIES & GENERATE SIGNAL", use_container_width=True):
-    # Simulated Scanning Animation Steps
     progress_bar = st.progress(0)
     status_text = st.empty()
 
@@ -219,20 +215,21 @@ if st.button("🚀 SCAN 999+ STRATEGIES & GENERATE SIGNAL", use_container_width=
         elif percent_complete == 100:
             status_text.text("Final Confluence Decision Computed!")
 
-    time.sleep(0.3)
+    time.sleep(0.2)
     progress_bar.empty()
     status_text.empty()
 
     signal, accuracy, bull, bear, rsi, stoch, price, status_class = run_999_engine(market_mode, selected_pair, candle_tf)
 
     # Glowing Animated Result Card
-    st.markdown(f"""
+    card_html = f"""
     <div class="main-card">
         <h3 style="color: #94a3b8; margin-bottom: 5px;">INSTITUTIONAL SIGNAL RESULT</h3>
         <div class="{status_class}">{signal}</div>
         <p style="color: #cbd5e1; margin-top: 10px;">Market: <b>{market_mode}</b> | Asset: <b>{selected_pair}</b> | Timeframe: <b>{candle_tf}</b></p>
     </div>
-    """, unsafe_unsafe_html=True if hasattr(st, "unsafe_html") else True)
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
     with c1:
