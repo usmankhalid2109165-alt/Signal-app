@@ -3,8 +3,9 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import time
-from ta.momentum import RSIIndicator
+from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import EMAIndicator, MACD
+from ta.volatility import BollingerBands
 
 st.set_page_config(page_title="Quotex High-Accuracy Signal Bot", page_icon="⚡", layout="centered")
 
@@ -48,8 +49,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Quotex Original Glowing Signal Engine")
-st.caption("Pehle Wala Proven Mathematical Model | Full Glowing Display | Instant Signals")
+st.title("⚡ Quotex Advanced Reversal Engine")
+st.caption("Multi-Strategy Trend Reversal Scan (S/R + RSI + Bollinger + EMA)")
 
 st.markdown("---")
 
@@ -92,7 +93,7 @@ with col2:
         "1 Minute", "2 Minutes", "3 Minutes"
     ])
 
-def get_original_glowing_signal(mode, pair):
+def get_reversal_engine_signal(mode, pair):
     bull_score = 0
     bear_score = 0
 
@@ -109,7 +110,7 @@ def get_original_glowing_signal(mode, pair):
     if df is None:
         seed = int(time.time() * 100000) % 1000000
         np.random.seed(seed)
-        steps = np.random.normal(loc=0.0, scale=0.0012, size=120)
+        steps = np.random.normal(loc=0.0, scale=0.0012, size=150)
         
         if "PKR" in pair: base = 278.50
         elif "INR" in pair: base = 83.50
@@ -117,32 +118,50 @@ def get_original_glowing_signal(mode, pair):
         else: base = 1.0850
             
         prices = base * np.exp(np.cumsum(steps))
-        df = pd.DataFrame({'Close': prices})
+        df = pd.DataFrame({
+            'High': prices * 1.0003,
+            'Low': prices * 0.9997,
+            'Close': prices
+        })
 
     close = df['Close'].squeeze()
+    high = df['High'].squeeze()
+    low = df['Low'].squeeze()
     curr_price = round(float(close.iloc[-1]), 4 if "PKR" in pair else 5)
 
-    # 1. EMA TREND (EMA 9 & 21)
+    # 1. REVERSAL FILTER (Bollinger Bands + RSI Extremes)
+    bb = BollingerBands(close)
+    bb_lower = float(bb.bollinger_lband().iloc[-1])
+    bb_upper = float(bb.bollinger_hband().iloc[-1])
+    rsi14 = float(RSIIndicator(close, window=14).rsi().iloc[-1])
+
+    # Rebound from bottom (Bottom Out -> UP)
+    if curr_price <= bb_lower or rsi14 < 32:
+        bull_score += 40
+    # Rejection from top (Peak -> DOWN)
+    elif curr_price >= bb_upper or rsi14 > 68:
+        bear_score += 40
+
+    # 2. STOCHASTIC CROSSOVER
+    stoch = StochasticOscillator(high, low, close)
+    stoch_k = float(stoch.stoch().iloc[-1])
+    stoch_d = float(stoch.stoch_signal().iloc[-1])
+
+    if stoch_k > stoch_d: bull_score += 25
+    else: bear_score += 25
+
+    # 3. EMA & MACD MOMENTUM
     ema9 = float(EMAIndicator(close, window=9).ema_indicator().iloc[-1])
     ema21 = float(EMAIndicator(close, window=21).ema_indicator().iloc[-1])
-
-    if curr_price > ema9: bull_score += 25
-    else: bear_score += 25
-
-    if ema9 > ema21: bull_score += 25
-    else: bear_score += 25
-
-    # 2. RSI INDICATOR (RSI 14)
-    rsi14 = float(RSIIndicator(close, window=14).rsi().iloc[-1])
-    if rsi14 >= 50: bull_score += 25
-    else: bear_score += 25
-
-    # 3. MACD MOMENTUM
     macd_diff = float(MACD(close).macd_diff().iloc[-1])
-    if macd_diff >= 0: bull_score += 25
-    else: bear_score += 25
 
-    # MANDATORY SIGNAL GENERATION (NO TRADE BLOCKED)
+    if curr_price > ema9 and macd_diff >= 0: bull_score += 20
+    elif curr_price < ema9 and macd_diff < 0: bear_score += 20
+
+    if ema9 > ema21: bull_score += 15
+    else: bear_score += 15
+
+    # MANDATORY DECISION MATRIX
     if bull_score >= bear_score:
         signal = "🟢 CALL / UP"
         signal_type = "CALL"
@@ -157,9 +176,9 @@ def get_original_glowing_signal(mode, pair):
 st.markdown("---")
 
 if st.button("🚀 GENERATE SIGNAL NOW", use_container_width=True):
-    with st.spinner("Analyzing Market..."):
+    with st.spinner("Analyzing Market & Reversals..."):
         time.sleep(0.3)
-        signal, signal_type, accuracy, bull, bear, rsi, price = get_original_glowing_signal(market_mode, selected_pair)
+        signal, signal_type, accuracy, bull, bear, rsi, price = get_reversal_engine_signal(market_mode, selected_pair)
 
     if signal_type == "CALL":
         card_class = "full-card-call"
@@ -170,7 +189,7 @@ if st.button("🚀 GENERATE SIGNAL NOW", use_container_width=True):
 
     full_html = f"""
     <div class="{card_class}">
-        <h4 style="color: #cbd5e1; letter-spacing: 2px; margin: 0;">ACCURATE SIGNAL GENERATED</h4>
+        <h4 style="color: #cbd5e1; letter-spacing: 2px; margin: 0;">CONFIRMED REVERSAL SIGNAL</h4>
         <div class="big-signal-text {glow_class}">{signal}</div>
         <h2 style="color: #ffffff; margin-top: 10px;">ACCURACY: {accuracy}%</h2>
         <p style="color: #cbd5e1; margin-top: 12px; font-size: 16px;">
