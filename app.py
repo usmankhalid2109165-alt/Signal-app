@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from urllib.request import Request, urlopen
+from urllib.parse import quote
+import json
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator, MACD, ADXIndicator
 
@@ -14,7 +17,7 @@ pairs = {
 }
 
 st.title("⚡ Quotex Signal Bot")
-st.caption("Fast directional signal from live market data. Every valid click returns UP or DOWN.")
+st.caption("Fast directional signal from live market data. Every successful click returns UP or DOWN.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -22,22 +25,66 @@ with col1:
 with col2:
     expiry = st.selectbox("Expiry / Horizon", [1, 2, 5], format_func=lambda x: f"{x} Minute{'s' if x > 1 else ''}")
 
-@st.cache_data(ttl=10)
-def load_data(ticker, period="7d", interval="1m"):
+
+def yahoo_chart(ticker, interval="1m", range_="1d"):
+    """Direct Yahoo chart endpoint; used before yfinance so hosted apps have a second data path."""
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker, safe='')}?range={range_}&interval={interval}&includePrePost=false&events=div%2Csplits"
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        result = payload.get("chart", {}).get("result")
+        if not result:
+            return pd.DataFrame()
+        result = result[0]
+        timestamps = result.get("timestamp", [])
+        quote_data = result.get("indicators", {}).get("quote", [{}])[0]
+        if not timestamps or not quote_data:
+            return pd.DataFrame()
+        df = pd.DataFrame({
+            "Open": quote_data.get("open", []),
+            "High": quote_data.get("high", []),
+            "Low": quote_data.get("low", []),
+            "Close": quote_data.get("close", []),
+        }, index=pd.to_datetime(timestamps, unit="s", utc=True))
+        return df.replace([np.inf, -np.inf], np.nan).dropna()
     except Exception:
         return pd.DataFrame()
-    if df is None or df.empty:
-        return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    required = ["Open", "High", "Low", "Close"]
-    if not all(c in df.columns for c in required):
-        return pd.DataFrame()
-    df = df[required].copy()
-    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=required)
-    return df
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def load_data(ticker):
+    # Prefer true 1-minute candles for speed.
+    df = yahoo_chart(ticker, "1m", "1d")
+    if len(df) >= 80:
+        return df
+
+    # Hosted environments sometimes block the direct endpoint; try yfinance.
+    try:
+        df = yf.download(ticker, period="7d", interval="1m", progress=False, auto_adjust=False, threads=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if df is not None and not df.empty and all(c in df.columns for c in ["Open", "High", "Low", "Close"]):
+            df = df[["Open", "High", "Low", "Close"]].copy()
+            df = df.replace([np.inf, -np.inf], np.nan).dropna()
+            if len(df) >= 80:
+                return df
+    except Exception:
+        pass
+
+    # Final real-data fallback: 5-minute candles. This still produces a directional signal.
+    df = yahoo_chart(ticker, "5m", "5d")
+    if len(df) >= 80:
+        return df
+    try:
+        df = yf.download(ticker, period="30d", interval="5m", progress=False, auto_adjust=False, threads=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if df is not None and not df.empty and all(c in df.columns for c in ["Open", "High", "Low", "Close"]):
+            return df[["Open", "High", "Low", "Close"]].replace([np.inf, -np.inf], np.nan).dropna()
+    except Exception:
+        pass
+    return pd.DataFrame()
 
 
 def indicators(df):
@@ -68,12 +115,10 @@ def indicators(df):
 
 
 def get_signal(x, horizon=1):
-    """Always choose a direction when valid candles exist.
-    This is a directional model, not a guarantee of the next candle."""
     if x is None or x.empty or len(x) < 60:
         return None, 0, "Data unavailable"
 
-    # Last completed candle when possible.
+    # Use the latest completed candle where possible.
     idx = -2 if len(x) >= 62 else -1
     prev_idx = -3 if len(x) >= 62 else -2
     r = x.iloc[idx]
@@ -83,7 +128,6 @@ def get_signal(x, horizon=1):
     up = 0.0
     down = 0.0
 
-    # Trend structure.
     if p > r.ema9 > r.ema21 > r.ema50:
         up += 4
     elif p < r.ema9 < r.ema21 < r.ema50:
@@ -92,13 +136,11 @@ def get_signal(x, horizon=1):
         up += 1.5 if p > r.ema21 else 0
         down += 1.5 if p < r.ema21 else 0
 
-    # EMA slope gives direction even when averages are crossing.
     up += 1.5 if r.ema9_slope > 0 else 0
     down += 1.5 if r.ema9_slope < 0 else 0
     up += 1 if r.ema21_slope > 0 else 0
     down += 1 if r.ema21_slope < 0 else 0
 
-    # RSI momentum.
     if r.rsi > prev.rsi:
         up += 1.5
     elif r.rsi < prev.rsi:
@@ -108,7 +150,6 @@ def get_signal(x, horizon=1):
     elif r.rsi <= 45:
         down += 0.75
 
-    # MACD direction and crossover bias.
     if r.macd_diff > 0:
         up += 2
     else:
@@ -118,28 +159,23 @@ def get_signal(x, horizon=1):
     else:
         down += 0.75
 
-    # Candle momentum.
     if r.Close > r.Open:
         up += 1
     elif r.Close < r.Open:
         down += 1
     if r.body_ratio >= 0.5:
-        up += 0.5 if r.Close > r.Open else 0
-        down += 0.5 if r.Close < r.Open else 0
+        if r.Close > r.Open:
+            up += 0.5
+        elif r.Close < r.Open:
+            down += 0.5
 
-    # For longer expiry, give more weight to the medium trend.
     if horizon >= 2:
-        if p > r.ema21:
-            up += 1
-        else:
-            down += 1
+        up += 1 if p > r.ema21 else 0
+        down += 1 if p < r.ema21 else 0
     if horizon >= 5:
-        if p > r.ema50:
-            up += 1
-        else:
-            down += 1
+        up += 1 if p > r.ema50 else 0
+        down += 1 if p < r.ema50 else 0
 
-    # Final tie-breaker: recent price momentum. This prevents NO SIGNAL.
     recent_move = float(x["Close"].iloc[idx] - x["Close"].iloc[idx - 3])
     if up == down:
         if recent_move >= 0:
@@ -161,8 +197,7 @@ def backtest(x, horizon):
         return None
     wins = losses = 0
     for i in range(62, len(x) - horizon):
-        window = x.iloc[: i + 1]
-        sig, _, _ = get_signal(window, horizon)
+        sig, _, _ = get_signal(x.iloc[: i + 1], horizon)
         if sig is None:
             continue
         entry = float(x["Close"].iloc[i])
@@ -181,11 +216,11 @@ if st.button("🚀 GET SIGNAL", use_container_width=True):
     with st.spinner("Getting fresh market data..."):
         raw = load_data(pairs[selected_pair])
         if raw.empty:
-            st.error("Live market data is temporarily unavailable. Refresh and try again.")
+            st.error("Market data could not be loaded right now. This is a data-provider connection issue, not a signal decision.")
             st.stop()
         data = indicators(raw)
         if data.empty or len(data) < 60:
-            st.error("Live candles are temporarily unavailable. Refresh and try again.")
+            st.error("Market data returned too few usable candles. Please tap GET SIGNAL again.")
             st.stop()
         signal, confidence, reason = get_signal(data, expiry)
 
