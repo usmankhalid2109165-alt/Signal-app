@@ -14,7 +14,7 @@ pairs = {
 }
 
 st.title("⚡ Quotex Signal Bot")
-st.caption("Trend + momentum + volatility confirmation. No random/fake fallback data.")
+st.caption("Fast 1-minute trend + momentum signal. No fake/random data.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -22,7 +22,7 @@ with col1:
 with col2:
     expiry = st.selectbox("Expiry / Horizon", [1, 2, 5], format_func=lambda x: f"{x} Minute{'s' if x > 1 else ''}")
 
-@st.cache_data(ttl=45)
+@st.cache_data(ttl=15)
 def load_data(ticker, period="7d", interval="1m"):
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
@@ -40,8 +40,7 @@ def load_data(ticker, period="7d", interval="1m"):
         return pd.DataFrame()
 
     df = df[required].copy()
-    df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=required)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=required)
     return df
 
 
@@ -64,74 +63,78 @@ def indicators(df):
     x["macd"] = m.macd()
     x["macd_signal"] = m.macd_signal()
     x["macd_diff"] = m.macd_diff()
-
     x["adx"] = ADXIndicator(high, low, close, 14).adx()
+
     x["range"] = high - low
     x["body"] = (close - open_).abs()
     x["body_ratio"] = x["body"] / x["range"].replace(0, np.nan)
 
     needed = ["Close", "Open", "ema9", "ema21", "ema50", "rsi", "macd", "macd_signal", "macd_diff", "adx", "body_ratio"]
-    x = x.replace([np.inf, -np.inf], np.nan).dropna(subset=needed)
-    return x
+    return x.replace([np.inf, -np.inf], np.nan).dropna(subset=needed)
 
 
-def get_signal(x):
+def get_signal(x, horizon=1):
     if x is None or x.empty or len(x) < 60:
         return "NO SIGNAL", 0, "Not enough valid candles"
 
-    r = x.iloc[-1]
-    prev = x.iloc[-2]
+    # Use the last completed candle where possible; this reduces flicker from a live candle.
+    r = x.iloc[-2] if len(x) >= 62 else x.iloc[-1]
+    prev = x.iloc[-3] if len(x) >= 62 else x.iloc[-2]
     p = float(r["Close"])
 
     up = 0.0
     down = 0.0
 
+    # Trend: strongest weight.
     if p > r.ema9 > r.ema21 > r.ema50:
         up += 3
     elif p < r.ema9 < r.ema21 < r.ema50:
         down += 3
-    else:
+    elif p > r.ema21:
+        up += 1.5
+    elif p < r.ema21:
+        down += 1.5
+
+    # RSI momentum.
+    if r.rsi > prev.rsi and r.rsi >= 50 and r.rsi < 72:
+        up += 1.5
+    elif r.rsi < prev.rsi and r.rsi <= 50 and r.rsi > 28:
+        down += 1.5
+
+    # MACD direction.
+    if r.macd_diff > 0:
+        up += 2
+    elif r.macd_diff < 0:
+        down += 2
+
+    # ADX filters only very weak markets; do not block most usable setups.
+    if r.adx < 12:
+        return "NO SIGNAL", 0, "Market too weak/sideways"
+
+    # Candle confirmation.
+    if r.Close > r.Open and r.body_ratio >= 0.35:
+        up += 1
+    elif r.Close < r.Open and r.body_ratio >= 0.35:
+        down += 1
+
+    # Small horizon adjustment: for 1m prefer current momentum; longer expiry needs trend alignment.
+    if horizon >= 2:
         if p > r.ema21:
-            up += 1
-        if p < r.ema21:
-            down += 1
-
-    if 52 <= r.rsi <= 68 and r.rsi > prev.rsi:
-        up += 2
-    elif 32 <= r.rsi <= 48 and r.rsi < prev.rsi:
-        down += 2
-    elif r.rsi > 70:
-        down += 0.5
-    elif r.rsi < 30:
-        up += 0.5
-
-    if r.macd_diff > 0 and r.macd > r.macd_signal:
-        up += 2
-    if r.macd_diff < 0 and r.macd < r.macd_signal:
-        down += 2
-
-    if r.adx < 18:
-        return "NO SIGNAL", 0, "Sideways/weak trend"
-
-    if up > down:
-        up += 1
-    elif down > up:
-        down += 1
-
-    if r.Close > r.Open and r.body_ratio >= 0.45:
-        up += 1
-    if r.Close < r.Open and r.body_ratio >= 0.45:
-        down += 1
+            up += 0.5
+        elif p < r.ema21:
+            down += 0.5
 
     total = up + down
     edge = abs(up - down)
-    confidence = round(min(99, 50 + edge / max(total, 1) * 50), 1)
+    confidence = round(min(95, 50 + (edge / max(total, 1)) * 45), 1)
 
-    if up >= 7 and up - down >= 2:
-        return "UP", confidence, "Bullish trend + momentum confirmation"
-    if down >= 7 and down - up >= 2:
-        return "DOWN", confidence, "Bearish trend + momentum confirmation"
-    return "NO SIGNAL", confidence, "Signals are mixed; wait for confirmation"
+    # More responsive than the previous version: NO SIGNAL is reserved for genuinely mixed/weak setups.
+    if up >= 4 and edge >= 1.25 and up > down:
+        return "UP", confidence, "Bullish trend/momentum setup"
+    if down >= 4 and edge >= 1.25 and down > up:
+        return "DOWN", confidence, "Bearish trend/momentum setup"
+
+    return "NO SIGNAL", confidence, "Mixed setup — wait for cleaner direction"
 
 
 def backtest(x, horizon):
@@ -139,9 +142,9 @@ def backtest(x, horizon):
         return None
 
     wins = losses = skipped = 0
-    for i in range(60, len(x) - horizon):
+    for i in range(62, len(x) - horizon):
         window = x.iloc[: i + 1]
-        sig, _, _ = get_signal(window)
+        sig, _, _ = get_signal(window, horizon)
         if sig == "NO SIGNAL":
             skipped += 1
             continue
@@ -167,7 +170,7 @@ def backtest(x, horizon):
 
 
 if st.button("🚀 GET SIGNAL", use_container_width=True):
-    with st.spinner("Analyzing live candles..."):
+    with st.spinner("Getting fresh market data..."):
         raw = load_data(pairs[selected_pair])
         if raw.empty:
             st.error("Market data unavailable. Try again in a few seconds.")
@@ -175,10 +178,10 @@ if st.button("🚀 GET SIGNAL", use_container_width=True):
 
         data = indicators(raw)
         if data.empty or len(data) < 60:
-            st.warning("Not enough valid candles returned by Yahoo Finance. Please try again shortly or select another pair.")
+            st.warning("Not enough valid candles returned. Try again shortly or select another pair.")
             st.stop()
 
-        signal, confidence, reason = get_signal(data)
+        signal, confidence, reason = get_signal(data, expiry)
 
     if signal == "UP":
         st.success(f"🟢 UP — confidence {confidence}%")
@@ -188,7 +191,7 @@ if st.button("🚀 GET SIGNAL", use_container_width=True):
         st.warning(f"🟡 NO SIGNAL — {reason}")
 
     c1, c2, c3 = st.columns(3)
-    r = data.iloc[-1]
+    r = data.iloc[-2] if len(data) >= 62 else data.iloc[-1]
     c1.metric("Price", f"{float(r.Close):.5f}")
     c2.metric("RSI", f"{float(r.rsi):.1f}")
     c3.metric("ADX", f"{float(r.adx):.1f}")
@@ -212,4 +215,4 @@ if st.button("📊 RUN BACKTEST", use_container_width=True):
         b.metric("Trades", result["trades"])
         c.metric("Wins", result["wins"])
         d.metric("Skipped", result["skipped"])
-        st.info("Backtest is historical only; it does not guarantee future/live accuracy. Broker candle data may differ from Yahoo Finance.")
+        st.info("Historical backtest only. It cannot guarantee future/live accuracy, and broker candles may differ from Yahoo Finance.")
